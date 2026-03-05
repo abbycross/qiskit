@@ -4,7 +4,7 @@
 #
 # This code is licensed under the Apache License, Version 2.0. You may
 # obtain a copy of this license in the LICENSE.txt file in the root directory
-# of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
+# of this source tree or at https://www.apache.org/licenses/LICENSE-2.0.
 #
 # Any modifications or derivative works of this code must retain this
 # copyright notice, and modified files need to carry a notice indicating
@@ -15,6 +15,7 @@
 import ast
 
 from qiskit.qpy.exceptions import QpyError
+from qiskit.utils.optionals import HAS_SYMPY
 
 
 ALLOWED_CALLERS = {
@@ -63,7 +64,7 @@ class ParseSympyWalker(ast.NodeVisitor):
     def __init__(self):
         self.stack = []
 
-    def visit_UnaryOp(self, node: ast.UnaryOp):  # pylint: disable=invalid-name
+    def visit_UnaryOp(self, node: ast.UnaryOp):
         """Visit a python unary op node"""
         self.visit(node.operand)
         arg = self.stack.pop()
@@ -78,11 +79,11 @@ class ParseSympyWalker(ast.NodeVisitor):
         else:
             raise QpyError(f"Invalid unary op as part of sympy srepr: {node.op}")
 
-    def visit_Constant(self, node: ast.Constant):  # pylint: disable=invalid-name
+    def visit_Constant(self, node: ast.Constant):
         """Visit a constant node."""
         self.stack.append(node.value)
 
-    def visit_Call(self, node: ast.Call):  # pylint: disable=invalid-name
+    def visit_Call(self, node: ast.Call):
         """Visit a call node
 
         This can only be parameter expression allowed sympy call types.
@@ -113,6 +114,10 @@ class ParseSympyWalker(ast.NodeVisitor):
             self.stack.append(obj)
 
 
+@HAS_SYMPY.require_in_call(
+    "Sympy is required to parse parameter expressions encoded using sympy's "
+    "srepr in QPY format versions < 13"
+)
 def parse_sympy_repr(sympy_repr: str):
     """Parse a given sympy srepr into a symbolic expression object."""
     tree = ast.parse(sympy_repr, mode="eval")

@@ -1,0 +1,94 @@
+# This code is part of Qiskit.
+#
+# (C) Copyright IBM 2025
+#
+# This code is licensed under the Apache License, Version 2.0. You may
+# obtain a copy of this license in the LICENSE.txt file in the root directory
+# of this source tree or at https://www.apache.org/licenses/LICENSE-2.0.
+#
+# Any modifications or derivative works of this code must retain this
+# copyright notice, and modified files need to carry a notice indicating
+# that they have been altered from the originals.
+
+
+"""Move clifford gates to the end of the circuit, changing rotation gates to multi-qubit rotations."""
+
+from qiskit.transpiler.basepasses import TransformationPass
+from qiskit.dagcircuit import DAGCircuit
+from qiskit._accelerate.litinski_transformation import run_litinski_transformation
+
+
+class LitinskiTransformation(TransformationPass):
+    """
+    Applies Litinski transform to a circuit.
+
+    The transform applies to a circuit containing Clifford, single-qubit RZ-rotation gates
+    (including T and Tdg), and standard Z-measurements, and moves Clifford gates to the end
+    of the circuit. In the process, it changes RZ-rotations to product pauli rotations
+    (implemented as :class:`.PauliEvolutionGate` gates), and changes Z-measurements
+    to product pauli measurements (implemented using :class:`.PauliProductMeasurement`
+    instructions).
+
+    The pass supports all of the Clifford gates in the list returned by
+    :func:`.get_clifford_gate_names`:
+
+    ``["id", "x", "y", "z", "h", "s", "sdg", "sx", "sxdg", "cx", "cz", "cy",
+    "swap","iswap", "ecr", "dcx"]``
+
+    The list of supported RZ-rotations is:
+
+    ``["t", "tdg", "rz"]``
+
+    References:
+
+    [1] Litinski. A Game of Surface Codes.
+    `Quantum 3, 128 (2019) <https://quantum-journal.org/papers/q-2019-03-05-128>`_
+
+    """
+
+    def __init__(
+        self,
+        fix_clifford: bool = True,
+        insert_barrier: bool = False,
+        legacy_pauli_evolution: bool = False,
+    ):
+        """
+
+        Args:
+            fix_clifford: If ``False`` (non-default), the returned circuit contains
+                only :class:`.PauliEvolution` gates, with the final Clifford gates omitted.
+                Note that in this case the operators of the original and synthesized
+                circuits will generally not be equivalent.
+            insert_barrier: If ``True`` and ``fix_clifford=True``, insert a barrier between the
+                circuit and the final cliffords. This argument has no effect if
+                ``fix_clifford=False``.
+            legacy_pauli_evolution: If ``True``, use :class:`.PauliEvolutionGate` to represent
+                the Pauli rotation gates. Otherwise, use :class:`.PauliProductRotationGate`
+                (the default), which uses a more efficient, fully Rust-backed path.
+        """
+        super().__init__()
+        self.fix_clifford = fix_clifford
+        self.insert_barrier = insert_barrier
+        self.legacy_pauli_evolution = legacy_pauli_evolution
+
+    def run(self, dag: DAGCircuit) -> DAGCircuit:
+        """Run the LitinskiTransformation pass on ``dag``.
+
+        Args:
+            dag: The input DAG.
+
+        Returns:
+            The output DAG.
+
+        Raises:
+            TranspilerError: If the circuit contains gates not supported by the pass.
+        """
+        new_dag = run_litinski_transformation(
+            dag, self.fix_clifford, self.insert_barrier, self.legacy_pauli_evolution
+        )
+
+        # If the pass did not do anything, the result is None
+        if new_dag is None:
+            return dag
+
+        return new_dag

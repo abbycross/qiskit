@@ -4,7 +4,7 @@
 #
 # This code is licensed under the Apache License, Version 2.0. You may
 # obtain a copy of this license in the LICENSE.txt file in the root directory
-# of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
+# of this source tree or at https://www.apache.org/licenses/LICENSE-2.0.
 #
 # Any modifications or derivative works of this code must retain this
 # copyright notice, and modified files need to carry a notice indicating
@@ -62,11 +62,19 @@ class ConsolidateBlocks(TransformationPass):
     the same qubits into a Unitary node, to be resynthesized later,
     to a potentially more optimal subcircuit.
 
+    This pass reads the :class:`.PropertySet` key ``ConsolidateBlocks_qubit_map`` which it uses to
+    communicate with recursive worker instances of itself for control-flow operations.  The key
+    should never be observable in a user-facing :class:`.PassManager` pipeline (it is only set in
+    internal :class:`.PassManager` instances), but the pass may return incorrect results or error if
+    another pass sets this key.
+
     Notes:
         This pass assumes that the 'blocks_list' property that it reads is
         given such that blocks are in topological order. The blocks are
         collected by a previous pass, such as `Collect2qBlocks`.
     """
+
+    _QUBIT_MAP_KEY = "ConsolidateBlocks_qubit_map"
 
     def __init__(
         self,
@@ -91,6 +99,7 @@ class ConsolidateBlocks(TransformationPass):
         """
         super().__init__()
         self.basis_gates = None
+        self.basis_gate_name = None
         # Bypass target if it doesn't contain any basis gates (i.e. it's a _FakeTarget), as this
         # not part of the official target model.
         self.target = target if target is not None and len(target.operation_names) > 0 else None
@@ -99,21 +108,26 @@ class ConsolidateBlocks(TransformationPass):
         self.force_consolidate = force_consolidate
         if kak_basis_gate is not None:
             self.decomposer = TwoQubitBasisDecomposer(kak_basis_gate)
+            self.basis_gate_name = kak_basis_gate.name
         elif basis_gates is not None:
             kak_gates = KAK_GATE_NAMES.keys() & (basis_gates or [])
             kak_param_gates = KAK_GATE_PARAM_NAMES.keys() & (basis_gates or [])
             if kak_param_gates:
                 self.decomposer = TwoQubitControlledUDecomposer(
-                    KAK_GATE_PARAM_NAMES[list(kak_param_gates)[0]]
+                    KAK_GATE_PARAM_NAMES[next(iter(kak_param_gates))]
                 )
+                self.basis_gate_name = next(iter(kak_param_gates))
             elif kak_gates:
                 self.decomposer = TwoQubitBasisDecomposer(
-                    KAK_GATE_NAMES[list(kak_gates)[0]], basis_fidelity=approximation_degree or 1.0
+                    KAK_GATE_NAMES[next(iter(kak_gates))],
+                    basis_fidelity=approximation_degree or 1.0,
                 )
+                self.basis_gate_name = next(iter(kak_gates))
             else:
                 self.decomposer = None
         else:
             self.decomposer = TwoQubitBasisDecomposer(CXGate())
+            self.basis_gate_name = "cx"
 
     def run(self, dag):
         """Run the ConsolidateBlocks pass on `dag`.
@@ -131,17 +145,21 @@ class ConsolidateBlocks(TransformationPass):
         if runs is not None:
             runs = [[node._node_id for node in run] for run in runs]
 
+        qubit_map = self.property_set.get(self._QUBIT_MAP_KEY, None)
+        if qubit_map is None:
+            qubit_map = list(range(dag.num_qubits()))
         consolidate_blocks(
             dag,
             self.decomposer._inner_decomposer,
-            self.decomposer.gate_name,
+            self.basis_gate_name,
             self.force_consolidate,
             target=self.target,
             basis_gates=self.basis_gates,
             blocks=blocks,
             runs=runs,
+            qubit_map=qubit_map,
         )
-        dag = self._handle_control_flow_ops(dag)
+        dag = self._handle_control_flow_ops(dag, qubit_map)
 
         # Clear collected blocks and runs as they are no longer valid after consolidation
         if "run_list" in self.property_set:
@@ -151,7 +169,7 @@ class ConsolidateBlocks(TransformationPass):
 
         return dag
 
-    def _handle_control_flow_ops(self, dag):
+    def _handle_control_flow_ops(self, dag, qubit_map):
         """
         This is similar to transpiler/passes/utils/control_flow.py except that the
         collect blocks is redone for the control flow blocks.
@@ -161,11 +179,13 @@ class ConsolidateBlocks(TransformationPass):
         if "run_list" in self.property_set:
             pass_manager.append(Collect1qRuns())
             pass_manager.append(Collect2qBlocks())
-
         pass_manager.append(self)
+
         for node in dag.control_flow_op_nodes():
-            dag.substitute_node(
-                node,
-                node.op.replace_blocks(pass_manager.run(block) for block in node.op.blocks),
+            inner_qubit_map = [qubit_map[dag.find_bit(q).index] for q in node.qargs]
+            new_op = node.op.replace_blocks(
+                pass_manager.run(block, property_set={self._QUBIT_MAP_KEY: inner_qubit_map})
+                for block in node.op.blocks
             )
+            dag.substitute_node(node, new_op)
         return dag

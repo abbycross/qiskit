@@ -4,13 +4,12 @@
 #
 # This code is licensed under the Apache License, Version 2.0. You may
 # obtain a copy of this license in the LICENSE.txt file in the root directory
-# of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
+# of this source tree or at https://www.apache.org/licenses/LICENSE-2.0.
 #
 # Any modifications or derivative works of this code must retain this
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
 
-# pylint: disable=invalid-name
 
 """Test QuantumCircuit.compose()."""
 
@@ -31,9 +30,9 @@ from qiskit.circuit import (
     SwitchCaseOp,
     CircuitError,
 )
-from qiskit.circuit.library import HGate, RZGate, CXGate, CCXGate, TwoLocal
+from qiskit.circuit.library import HGate, RZGate, CXGate, CCXGate, n_local
 from qiskit.circuit.classical import expr, types
-from test import QiskitTestCase  # pylint: disable=wrong-import-order
+from test import QiskitTestCase
 
 
 class TestCircuitCompose(QiskitTestCase):
@@ -585,7 +584,7 @@ class TestCircuitCompose(QiskitTestCase):
         qc_a.compose(qc_b, wrap=True, inplace=True)
 
         self.assertDictEqual(qc_a.count_ops(), {"B": 1, "x": 1})
-        self.assertDictEqual(qc_a.decompose().count_ops(), {"h": 1, "u3": 1})
+        self.assertDictEqual(qc_a.decompose().count_ops(), {"h": 1, "u": 1})
 
     def test_wrapping_unitary_circuit(self):
         """Test a unitary circuit will be wrapped as Gate, else as Instruction."""
@@ -656,7 +655,7 @@ class TestCircuitCompose(QiskitTestCase):
 
     def test_compose_no_clbits_in_one(self):
         """Test combining a circuit with cregs to one without"""
-        ansatz = TwoLocal(2, rotation_blocks="ry", entanglement_blocks="cx")
+        ansatz = n_local(2, rotation_blocks="ry", entanglement_blocks="cx")
 
         qc = QuantumCircuit(2)
         qc.measure_all()
@@ -665,7 +664,7 @@ class TestCircuitCompose(QiskitTestCase):
 
     def test_compose_no_clbits_in_one_inplace(self):
         """Test combining a circuit with cregs to one without inplace"""
-        ansatz = TwoLocal(2, rotation_blocks="ry", entanglement_blocks="cx")
+        ansatz = n_local(2, rotation_blocks="ry", entanglement_blocks="cx")
 
         qc = QuantumCircuit(2)
         qc.measure_all()
@@ -674,7 +673,7 @@ class TestCircuitCompose(QiskitTestCase):
 
     def test_compose_no_clbits_in_one_multireg(self):
         """Test combining a circuit with cregs to one without, multi cregs"""
-        ansatz = TwoLocal(2, rotation_blocks="ry", entanglement_blocks="cx")
+        ansatz = n_local(2, rotation_blocks="ry", entanglement_blocks="cx")
 
         qa = QuantumRegister(2, "q")
         ca = ClassicalRegister(2, "a")
@@ -868,6 +867,19 @@ class TestCircuitCompose(QiskitTestCase):
         self.assertEqual(c.name, "c")
         self.assertEqual([a1, c], list(out.iter_captured_stretches()))
         self.assertEqual([a1, c], list(out.iter_stretches()))
+
+    def test_remap_stretch_inside_var(self):
+        """Test that the variable remapper checks inside `Delay` nodes."""
+        qc = QuantumCircuit(1)
+        a = qc.add_stretch("a")
+        qc.delay(expr.mul(2, a), 0)
+
+        other = QuantumCircuit(1)
+        b = other.add_stretch("b")
+        other.delay(expr.mul(2, b), 0)
+
+        actual = QuantumCircuit(1).compose(other, var_remap={b: a})
+        self.assertEqual(qc, actual)
 
     def test_simple_inline_captures(self):
         """We should be able to inline captures onto other variables."""

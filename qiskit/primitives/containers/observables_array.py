@@ -4,7 +4,7 @@
 #
 # This code is licensed under the Apache License, Version 2.0. You may
 # obtain a copy of this license in the LICENSE.txt file in the root directory
-# of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
+# of this source tree or at https://www.apache.org/licenses/LICENSE-2.0.
 #
 # Any modifications or derivative works of this code must retain this
 # copyright notice, and modified files need to carry a notice indicating
@@ -16,11 +16,10 @@ ND-Array container class for Estimator observables.
 """
 from __future__ import annotations
 
-import re
 from copy import deepcopy
 from collections.abc import Iterable, Mapping as _Mapping
-from functools import lru_cache
-from typing import Union, Mapping, overload, TYPE_CHECKING
+from typing import overload, TYPE_CHECKING
+from collections.abc import Mapping
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -38,17 +37,13 @@ if TYPE_CHECKING:
 # Public API classes
 __all__ = ["ObservableLike", "ObservablesArrayLike"]
 
-ObservableLike = Union[
-    str,
-    Pauli,
-    SparsePauliOp,
-    SparseObservable,
-    Mapping[Union[str, Pauli], float],
-]
+IndexType = int | slice | None
+
+ObservableLike = str | Pauli | SparsePauliOp | SparseObservable | Mapping[str | Pauli, float]
 """Types that can be natively used to construct a Hermitian Estimator observable."""
 
 
-ObservablesArrayLike = Union[ObservableLike, ArrayLike]
+ObservablesArrayLike = ObservableLike | ArrayLike
 """Types that can be natively converted to an array of Hermitian Estimator observables."""
 
 
@@ -82,7 +77,6 @@ class ObservablesArray(ShapedMixin):
         super().__init__()
         if isinstance(observables, ObservablesArray):
             observables = observables._array
-
         self._array = object_array(observables, copy=copy, list_types=(PauliList,))
         self._shape = self._array.shape
         self._num_qubits = num_qubits
@@ -107,7 +101,7 @@ class ObservablesArray(ShapedMixin):
 
     @staticmethod
     def _obs_to_dict(obs: SparseObservable) -> Mapping[str, float]:
-        """Convert a sparse observable to a mapping from Pauli strings to coefficients"""
+        """Convert a simplified sparse observable to a mapping from Pauli strings to coefficients."""
         result = {}
         for sparse_pauli_str, pauli_qubits, coeff in obs.to_sparse_list():
 
@@ -157,9 +151,9 @@ class ObservablesArray(ShapedMixin):
         """
         return self.__array__().tolist()
 
-    def __array__(self, dtype=None, copy=None) -> np.ndarray:  # pylint: disable=unused-argument
-        """Convert to a Numpy.ndarray"""
-        if dtype is None or dtype == object:
+    def __array__(self, dtype=None, copy=None) -> np.ndarray:
+        """Convert to a Numpy.ndarray with elements of type dict."""
+        if dtype is None or dtype is object:
             tmp_result = self.__getitem__(tuple(slice(None) for _ in self._array.shape))
             if len(self._array.shape) == 0:
                 result = np.ndarray(shape=self._array.shape, dtype=dict)
@@ -171,16 +165,51 @@ class ObservablesArray(ShapedMixin):
             return result
         raise ValueError("Type must be 'None' or 'object'")
 
+    def sparse_observables_array(self, copy: bool = False) -> np.ndarray:
+        """Convert to a :class:`numpy.ndarray` with elements of type :class:`~.SparseObservable`.
+
+        Args:
+            copy: Whether to make a new array instance with new sparse observables as elements.
+
+        Returns:
+            A :class:`numpy.ndarray` with elements of type :class:`~.SparseObservable`.
+        """
+        obs = self.copy() if copy else self
+        return obs._array
+
     @overload
     def __getitem__(self, args: int | tuple[int, ...]) -> Mapping[str, float]: ...
 
     @overload
-    def __getitem__(self, args: slice | tuple[slice, ...]) -> ObservablesArray: ...
+    def __getitem__(self, args: IndexType | tuple[IndexType, ...]) -> ObservablesArray: ...
 
     def __getitem__(self, args):
         item = self._array[args]
         if not isinstance(item, np.ndarray):
             return self._obs_to_dict(item)
+
+        return ObservablesArray(item, copy=False, validate=False)
+
+    @overload
+    def slice(self, args: int | tuple[int, ...]) -> SparseObservable: ...
+
+    @overload
+    def slice(self, args: IndexType | tuple[IndexType, ...]) -> ObservablesArray: ...
+
+    def slice(self, args):
+        """Take a slice of the observables in this array.
+
+        .. note::
+           This method does not copy observables; modifying the returned observables will affect this
+           instance.
+
+        Returns:
+            A single :class:`~.SparseObservable` if an integer is given for every array axis, otherwise,
+            a new :class:`~.ObservablesArray`.
+        """
+        item = self._array[args]
+        if not isinstance(item, np.ndarray):
+            return item
 
         return ObservablesArray(item, copy=False, validate=False)
 
@@ -211,7 +240,7 @@ class ObservablesArray(ShapedMixin):
 
     @property
     def num_qubits(self) -> int:
-        """Return the observable array's number of qubits"""
+        """The number of qubits each observable acts on."""
         return self._num_qubits
 
     @classmethod
@@ -226,7 +255,7 @@ class ObservablesArray(ShapedMixin):
 
         Raises:
             TypeError: If the input cannot be formatted because its type is not valid.
-            ValueError: If the input observable is invalid.
+            ValueError: If the input observable is invalid or empty.
         """
         # Pauli-type conversions
         if isinstance(observable, SparsePauliOp):
@@ -248,21 +277,28 @@ class ObservablesArray(ShapedMixin):
             observable = SparseObservable.from_list(term_list)
 
         if isinstance(observable, SparseObservable):
-            # Check that the operator has real coeffs
+            observable = observable.simplify()
+
+            # Check that the simplified operator has real coeffs
             coeffs = np.real_if_close(observable.coeffs)
             if np.iscomplexobj(coeffs):
                 raise ValueError(
-                    "Non-Hermitian input observable: the input SparsePauliOp has non-zero"
+                    "Non-Hermitian input observable: the simplified input observable has a non-zero"
                     " imaginary part in its coefficients."
                 )
 
-            return SparseObservable.from_raw_parts(
+            observable = SparseObservable.from_raw_parts(
                 observable.num_qubits,
                 coeffs,
                 observable.bit_terms,
                 observable.indices,
                 observable.boundaries,
-            ).simplify(tol=0)
+            )
+
+            if observable == SparseObservable.zero(observable.num_qubits):
+                raise ValueError("Empty observable was detected.")
+
+            return observable
 
         raise TypeError(f"Invalid observable type: {type(observable)}")
 
@@ -344,15 +380,3 @@ class ObservablesArray(ShapedMixin):
                     "An observable was detected, whose number of qubits"
                     " does not match the array's number of qubits"
                 )
-
-
-@lru_cache(1)
-def _regex_match(allowed_chars: str) -> re.Pattern:
-    """Return pattern for matching if a string contains only the allowed characters."""
-    return re.compile(f"^[{re.escape(allowed_chars)}]*$")
-
-
-@lru_cache(1)
-def _regex_invalid(allowed_chars: str) -> re.Pattern:
-    """Return pattern for selecting invalid strings"""
-    return re.compile(f"[^{re.escape(allowed_chars)}]")
